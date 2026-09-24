@@ -201,8 +201,8 @@ def food_options(preferences: Dict[str, Any], city: Dict[str, Any]) -> List[Dict
     return options
 
 
-def estimate_cost(activity: Dict[str, Any], food: Dict[str, Any]) -> float:
-    return float(activity["cost"] + food["cost"] + 150)  # local transport buffer
+def estimate_cost(activities: List[Dict[str, Any]], food: Dict[str, Any]) -> float:
+    return float(sum(item["cost"] for item in activities) + food["cost"])
 
 
 def validate_plan(plan: Dict[str, Any], preferences: Dict[str, Any]) -> Dict[str, Any]:
@@ -215,33 +215,52 @@ def validate_plan(plan: Dict[str, Any], preferences: Dict[str, Any]) -> Dict[str
 
 
 def generate_final(
-    preferences: Dict[str, Any], activity: Dict[str, Any], food: Dict[str, Any], cost: float,
+    preferences: Dict[str, Any], activities: List[Dict[str, Any]], food: Dict[str, Any], cost: float,
     source: str = "mock",
 ) -> Dict[str, Any]:
-    duration = min(activity["hours"] + 1.5, preferences["available_hours"])
+    duration = min(sum(item["hours"] for item in activities) + 1.5, preferences["available_hours"])
     evening = "evening" in preferences["time_window"] or "night" in preferences["time_window"]
-    first_time, second_time = ("17:00", "19:30") if evening else ("10:00", "13:00")
-    activity_map_url = "https://www.google.com/maps/search/?api=1&query=" + quote(
-        f"{activity['name']}, {preferences['city']}"
-    )
+    start_minutes = 17 * 60 if evening else 10 * 60
+    schedule = []
+    elapsed_minutes = 0
+    for activity in activities:
+        minutes = start_minutes + elapsed_minutes
+        activity_map_url = "https://www.google.com/maps/search/?api=1&query=" + quote(
+            f"{activity['name']}, {preferences['city']}"
+        )
+        schedule.append({
+            "time": f"{minutes // 60:02d}:{minutes % 60:02d}",
+            "activity": activity["name"],
+            "type": activity["type"],
+            "duration_hours": activity["hours"],
+            "description": f"{activity['hours']} hours of {activity['type']} time, chosen to suit a {preferences['mood']} mood.",
+            "cost": activity["cost"],
+            "map_url": activity_map_url,
+        })
+        elapsed_minutes += int(activity["hours"] * 60) + 30
+    food_minutes = start_minutes + elapsed_minutes
     food_map_url = "https://www.google.com/maps/search/?api=1&query=" + quote(
         f"{food['name']}, {preferences['city']}"
     )
+    schedule.append({
+        "time": f"{food_minutes // 60:02d}:{food_minutes % 60:02d}",
+        "activity": food["name"],
+        "type": "food",
+        "duration_hours": 1.5,
+        "description": "A practical, constraint-aware meal break close to the route.",
+        "cost": food["cost"],
+        "map_url": food_map_url,
+    })
     return {
         "city": preferences["city"],
         "title": f"A {preferences['mood'].title()} Saturday in {preferences['city'].title()}",
         "intro": "A low-stress route with one grounding activity and a satisfying meal, leaving room to wander.",
-        "schedule": [
-            {"time": first_time, "activity": activity["name"], "type": activity["type"], "duration_hours": activity["hours"], "description": f"{activity['hours']} hours of {activity['type']} time, chosen to suit a {preferences['mood']} mood.", "cost": activity["cost"], "map_url": activity_map_url},
-            {"time": second_time, "activity": food["name"], "type": "food", "duration_hours": 1.5, "description": "A practical, constraint-aware meal break close to the route.", "cost": food["cost"], "map_url": food_map_url},
-        ],
+        "schedule": schedule,
         "estimated_cost": round(cost),
         "duration_hours": round(duration, 1),
         "rationale": f"The plan pairs your {', '.join(preferences['interests']) or 'easygoing'} interests with a {preferences['available_hours']}-hour pace and keeps the route simple.",
         "source": source,
-        "tradeoffs": [
-            "The route favors a short, low-friction pair of stops over packing in too many activities."
-        ],
+        "tradeoffs": [f"The route includes {len(activities)} activities plus a meal and stays within the available time."],
         "tips": ["Carry water and check venue timings before leaving.", "Use public transport where convenient."],
     }
 
@@ -275,11 +294,12 @@ def create_plan(request: PlanRequest) -> Dict[str, Any]:
         if not requested_types or item["type"] in requested_types
     ]
     activities = matching_live or live_activities or activity_options(preferences, city)
-    activity = activities[0]
+    activity_count = min(3, max(1, int((preferences["available_hours"] - 1.5) // 2)))
+    selected_activities = activities[:activity_count]
     food = (live_food or food_options(preferences, city))[0]
-    cost = estimate_cost(activity, food)
+    cost = estimate_cost(selected_activities, food)
     source = real_options["source"] if real_options["status"] == "live" else "mock"
-    plan = generate_final(preferences, activity, food, cost, source)
+    plan = generate_final(preferences, selected_activities, food, cost, source)
     if preferences["budget"] and cost > preferences["budget"]:
         plan["tradeoffs"].append(
             f"This option is about INR {round(cost - preferences['budget'])} over budget because it keeps the route realistic; the free activity is the easiest saving."

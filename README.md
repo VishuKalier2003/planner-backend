@@ -35,6 +35,31 @@ Example request:
 
 ## Deploy for free
 
+### Vercel (serverless FastAPI)
+
+This repository includes [`api/index.py`](./api/index.py) as the Vercel
+serverless entrypoint and [`vercel.json`](./vercel.json) for function
+configuration.
+
+In Vercel, import this repository and leave the project root at the
+repository root. Vercel detects the Python function under `api/` and installs
+packages from `requirements.txt`. No environment variables are required.
+
+After deployment, verify:
+
+- `https://YOUR-PROJECT.vercel.app/health`
+- `https://YOUR-PROJECT.vercel.app/docs`
+- `https://YOUR-PROJECT.vercel.app/api/health`
+
+Set the frontend's `VITE_API_URL` to the project URL without a trailing slash.
+The frontend already appends `/api/plan`.
+
+Vercel's Python runtime is serverless, so it is stateless and may have a short
+cold start. This app is suitable because it uses only in-memory mock data and
+completes each request quickly.
+
+### Render or Railway
+
 No environment variables are required. Create a Python service on **Render**
 or **Railway**, set the root directory to `backend` (if deploying the
 repository), and use:

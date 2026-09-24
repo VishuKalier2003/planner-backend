@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import math
+import re
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 from typing import Any, Dict, List, Union
@@ -73,39 +75,62 @@ def parse_preferences(request: PlanRequest) -> Dict[str, Any]:
     interests = request.interests if isinstance(request.interests, list) else [request.interests]
     constraints = request.constraints or []
     if isinstance(constraints, str):
-        constraints = [constraints]
+        constraints = re.split(r"[,;\n]+", constraints)
     try:
         budget = float(request.budget)
     except (TypeError, ValueError):
         budget = 0
+    if not math.isfinite(budget):
+        budget = 0
     return {
-        "city": request.city.strip(),
+        "city": " ".join(request.city.split()),
         "budget": max(0, budget),
         "available_hours": _hours_from_value(request.available_time),
+        "time_window": str(request.available_time).lower(),
         "mood": request.mood.strip().lower(),
-        "interests": [item.strip().lower() for item in interests if item.strip()],
-        "constraints": [item.strip().lower() for item in constraints if item.strip()],
+        "interests": [item.strip().lower() for item in interests if isinstance(item, str) and item.strip()],
+        "constraints": [item.strip().lower() for item in constraints if isinstance(item, str) and item.strip()],
     }
 
 
 def _hours_from_value(value: Union[str, float, int]) -> float:
     if isinstance(value, (int, float)):
         return max(1, float(value))
-    text = value.lower()
+    text = str(value).lower().strip()
     if "half" in text:
         return 4
     if "hour" in text:
         try:
-            return max(1, float(text.split("hour")[0].strip()))
+            number = re.search(r"\d+(?:\.\d+)?", text)
+            return max(1, float(number.group()) if number else 4)
         except ValueError:
             pass
     return 8 if "full" in text or "day" in text else 4
 
 
+INTEREST_ALIASES = {
+    "good coffee": {"food"},
+    "local food": {"food"},
+    "art & culture": {"culture", "historic"},
+    "nature": {"nature"},
+    "shopping": {"entertainment"},
+    "live music": {"entertainment"},
+}
+
+
+def _requested_types(preferences: Dict[str, Any]) -> set[str]:
+    requested = set()
+    for interest in preferences["interests"]:
+        requested.update(INTEREST_ALIASES.get(interest, {interest}))
+    text = " ".join(preferences["interests"] + preferences["constraints"])
+    if any(term in text for term in ("monument", "historic", "heritage", "museum", "attraction")):
+        requested.update({"culture", "historic"})
+    return requested
+
+
 def activity_options(preferences: Dict[str, Any], city: Dict[str, Any]) -> List[Dict[str, Any]]:
     options = city["activities"]
-    interests = preferences["interests"]
-    matching = [item for item in options if item["type"] in interests]
+    matching = [item for item in options if item["type"] in _requested_types(preferences)]
     return matching or options
 
 
@@ -128,6 +153,7 @@ def get_real_place_options(city_name: str, preferences: Dict[str, Any]) -> Dict[
 (
   nwr(around:5000,{lat},{lon})[leisure=park];
   nwr(around:5000,{lat},{lon})[tourism=attraction];
+  nwr(around:5000,{lat},{lon})[historic=monument];
   nwr(around:5000,{lat},{lon})[amenity~"cafe|restaurant"];
 );
 out center tags 12;
@@ -150,9 +176,11 @@ out center tags 12;
             if not name:
                 continue
             if tags.get("amenity") in {"cafe", "restaurant"}:
-                food.append({"name": name, "cost": 450, "vegetarian": "vegetarian" in " ".join(tags.values()).lower()})
+                food.append({"name": name, "cost": 450, "vegetarian": "vegetarian" in " ".join(str(value) for value in tags.values()).lower()})
             else:
                 activity_type = "nature" if tags.get("leisure") == "park" else "culture"
+                if tags.get("historic") == "monument":
+                    activity_type = "historic"
                 activities.append({"name": name, "type": activity_type, "hours": 2, "cost": 0, "real": True})
         return {
             "activities": activities[:8],
@@ -191,13 +219,15 @@ def generate_final(
     source: str = "mock",
 ) -> Dict[str, Any]:
     duration = min(activity["hours"] + 1.5, preferences["available_hours"])
+    evening = "evening" in preferences["time_window"] or "night" in preferences["time_window"]
+    first_time, second_time = ("17:00", "19:30") if evening else ("10:00", "13:00")
     return {
         "city": preferences["city"],
         "title": f"A {preferences['mood'].title()} Saturday in {preferences['city'].title()}",
         "intro": "A low-stress route with one grounding activity and a satisfying meal, leaving room to wander.",
         "schedule": [
-            {"time": "10:00", "activity": activity["name"], "type": activity["type"], "duration_hours": activity["hours"], "description": f"{activity['hours']} hours of {activity['type']} time, chosen to suit a {preferences['mood']} mood.", "cost": activity["cost"]},
-            {"time": "13:00", "activity": food["name"], "type": "food", "duration_hours": 1.5, "description": "A practical, constraint-aware meal break close to the route.", "cost": food["cost"]},
+            {"time": first_time, "activity": activity["name"], "type": activity["type"], "duration_hours": activity["hours"], "description": f"{activity['hours']} hours of {activity['type']} time, chosen to suit a {preferences['mood']} mood.", "cost": activity["cost"]},
+            {"time": second_time, "activity": food["name"], "type": "food", "duration_hours": 1.5, "description": "A practical, constraint-aware meal break close to the route.", "cost": food["cost"]},
         ],
         "estimated_cost": round(cost),
         "duration_hours": round(duration, 1),
@@ -233,7 +263,12 @@ def create_plan(request: PlanRequest) -> Dict[str, Any]:
     real_options = get_real_place_options(preferences["city"], preferences)
     live_activities = real_options["activities"]
     live_food = real_options["food"]
-    activities = live_activities or activity_options(preferences, city)
+    requested_types = _requested_types(preferences)
+    matching_live = [
+        item for item in live_activities
+        if not requested_types or item["type"] in requested_types
+    ]
+    activities = matching_live or live_activities or activity_options(preferences, city)
     activity = activities[0]
     food = (live_food or food_options(preferences, city))[0]
     cost = estimate_cost(activity, food)

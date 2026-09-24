@@ -123,6 +123,13 @@ def _requested_types(preferences: Dict[str, Any]) -> set[str]:
     for interest in preferences["interests"]:
         requested.update(INTEREST_ALIASES.get(interest, {interest}))
     text = " ".join(preferences["interests"] + preferences["constraints"])
+    for keyword, activity_type in (
+        ("nature", "nature"), ("park", "nature"), ("food", "food"),
+        ("coffee", "food"), ("music", "entertainment"), ("shopping", "entertainment"),
+        ("culture", "culture"), ("art", "culture"),
+    ):
+        if keyword in text:
+            requested.add(activity_type)
     if any(term in text for term in ("monument", "historic", "heritage", "museum", "attraction")):
         requested.update({"culture", "historic"})
     return requested

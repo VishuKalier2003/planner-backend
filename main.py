@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from urllib.parse import quote
+from urllib.request import Request, urlopen
 from typing import Any, Dict, List, Union
 
 from fastapi import FastAPI
@@ -106,6 +109,61 @@ def activity_options(preferences: Dict[str, Any], city: Dict[str, Any]) -> List[
     return matching or options
 
 
+def get_real_place_options(city_name: str, preferences: Dict[str, Any]) -> Dict[str, Any]:
+    """Fetch a small, free OSM/Overpass sample; callers must keep a mock fallback."""
+    headers = {"User-Agent": "perfect-saturday-planner-demo/1.0 (educational project)"}
+    try:
+        location_url = (
+            "https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q="
+            + quote(city_name)
+        )
+        with urlopen(Request(location_url, headers=headers), timeout=4) as response:
+            locations = json.loads(response.read().decode("utf-8"))
+        if not locations:
+            return {"activities": [], "food": [], "source": "osm", "status": "no_match"}
+
+        lat, lon = locations[0]["lat"], locations[0]["lon"]
+        query = f"""
+[out:json][timeout:8];
+(
+  nwr(around:5000,{lat},{lon})[leisure=park];
+  nwr(around:5000,{lat},{lon})[tourism=attraction];
+  nwr(around:5000,{lat},{lon})[amenity~"cafe|restaurant"];
+);
+out center tags 12;
+"""
+        overpass_url = "https://overpass-api.de/api/interpreter"
+        overpass_request = Request(
+            overpass_url,
+            data=("data=" + quote(query)).encode("utf-8"),
+            headers={**headers, "Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        )
+        with urlopen(overpass_request, timeout=10) as response:
+            elements = json.loads(response.read().decode("utf-8")).get("elements", [])
+
+        activities: List[Dict[str, Any]] = []
+        food: List[Dict[str, Any]] = []
+        for element in elements:
+            tags = element.get("tags", {})
+            name = tags.get("name")
+            if not name:
+                continue
+            if tags.get("amenity") in {"cafe", "restaurant"}:
+                food.append({"name": name, "cost": 450, "vegetarian": "vegetarian" in " ".join(tags.values()).lower()})
+            else:
+                activity_type = "nature" if tags.get("leisure") == "park" else "culture"
+                activities.append({"name": name, "type": activity_type, "hours": 2, "cost": 0, "real": True})
+        return {
+            "activities": activities[:8],
+            "food": food[:8],
+            "source": "openstreetmap",
+            "status": "live" if activities or food else "no_match",
+        }
+    except (OSError, ValueError, KeyError, json.JSONDecodeError):
+        return {"activities": [], "food": [], "source": "openstreetmap", "status": "unavailable"}
+
+
 def food_options(preferences: Dict[str, Any], city: Dict[str, Any]) -> List[Dict[str, Any]]:
     options = city["food"]
     if any("vegetarian" in constraint or "veg" == constraint for constraint in preferences["constraints"]):
@@ -129,7 +187,8 @@ def validate_plan(plan: Dict[str, Any], preferences: Dict[str, Any]) -> Dict[str
 
 
 def generate_final(
-    preferences: Dict[str, Any], activity: Dict[str, Any], food: Dict[str, Any], cost: float
+    preferences: Dict[str, Any], activity: Dict[str, Any], food: Dict[str, Any], cost: float,
+    source: str = "mock",
 ) -> Dict[str, Any]:
     duration = min(activity["hours"] + 1.5, preferences["available_hours"])
     return {
@@ -143,6 +202,10 @@ def generate_final(
         "estimated_cost": round(cost),
         "duration_hours": round(duration, 1),
         "rationale": f"The plan pairs your {', '.join(preferences['interests']) or 'easygoing'} interests with a {preferences['available_hours']}-hour pace and keeps the route simple.",
+        "source": source,
+        "tradeoffs": [
+            "The route favors a short, low-friction pair of stops over packing in too many activities."
+        ],
         "tips": ["Carry water and check venue timings before leaving.", "Use public transport where convenient."],
     }
 
@@ -167,14 +230,28 @@ def create_plan(request: PlanRequest) -> Dict[str, Any]:
         city = CITY_DATA["bangalore"]
         preferences["city"] = city["display_name"]
 
-    activities = activity_options(preferences, city)
+    real_options = get_real_place_options(preferences["city"], preferences)
+    live_activities = real_options["activities"]
+    live_food = real_options["food"]
+    activities = live_activities or activity_options(preferences, city)
     activity = activities[0]
-    food = food_options(preferences, city)[0]
+    food = (live_food or food_options(preferences, city))[0]
     cost = estimate_cost(activity, food)
-    plan = generate_final(preferences, activity, food, cost)
+    source = real_options["source"] if real_options["status"] == "live" else "mock"
+    plan = generate_final(preferences, activity, food, cost, source)
+    if preferences["budget"] and cost > preferences["budget"]:
+        plan["tradeoffs"].append(
+            f"This option is about INR {round(cost - preferences['budget'])} over budget because it keeps the route realistic; the free activity is the easiest saving."
+        )
     validation = validate_plan(plan, preferences)
+    clarifying_questions = []
+    if not preferences["interests"]:
+        clarifying_questions.append("What would you enjoy most: food, nature, culture, music, or shopping?")
+    if preferences["mood"] in {"relaxed", "slow & sunny"} and preferences["available_hours"] <= 3:
+        clarifying_questions.append("Should the short plan prioritize a meal or one standout activity?")
     trace = [
         {"stage": "parse_preferences", "status": "completed"},
+        {"stage": "real_place_lookup", "status": real_options["status"], "source": real_options["source"]},
         {"stage": "activity_options", "status": "completed", "count": len(activities)},
         {"stage": "food_options", "status": "completed", "count": len(city["food"])},
         {"stage": "estimate_cost", "status": "completed", "amount": round(cost)},
@@ -185,6 +262,7 @@ def create_plan(request: PlanRequest) -> Dict[str, Any]:
         "plan": plan,
         "trace": trace,
         "validation": validation,
+        "clarifying_questions": clarifying_questions,
         "fallback": {
             "used": fallback,
             "requested_city": request.city,

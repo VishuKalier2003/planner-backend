@@ -58,6 +58,15 @@ Vercel's Python runtime is serverless, so it is stateless and may have a short
 cold start. This app is suitable because it uses only in-memory mock data and
 completes each request quickly.
 
+When available, the planner also calls OpenStreetMap's Nominatim geocoder and
+Overpass API to find nearby parks, attractions, cafes, and restaurants. The
+backend sends a descriptive User-Agent, uses small bounded queries, and falls
+back to the curated mock catalog if either public service is unavailable or
+returns no named places. The UI displays the source and links to the required
+OpenStreetMap attribution. These public services are best-effort and have
+rate/usage limits; this integration is intended for a low-volume demo, not
+high-traffic production.
+
 ### Render or Railway
 
 No environment variables are required. Create a Python service on **Render**

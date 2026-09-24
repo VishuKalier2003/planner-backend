@@ -31,6 +31,7 @@ class PlanRequest(BaseModel):
     mood: str = "relaxed"
     interests: Union[List[str], str] = Field(default_factory=list)
     constraints: Union[List[str], str, None] = None
+    clarifications_answered: bool = False
 
 
 CITY_DATA: Dict[str, Dict[str, Any]] = {
@@ -313,9 +314,13 @@ def create_plan(request: PlanRequest) -> Dict[str, Any]:
         )
     validation = validate_plan(plan, preferences)
     clarifying_questions = []
-    if not preferences["interests"]:
+    if not request.clarifications_answered and not preferences["interests"]:
         clarifying_questions.append("What would you enjoy most: food, nature, culture, music, or shopping?")
-    if preferences["mood"] in {"relaxed", "slow & sunny"} and preferences["available_hours"] <= 3:
+    if (
+        not request.clarifications_answered
+        and preferences["mood"] in {"relaxed", "slow & sunny"}
+        and preferences["available_hours"] <= 3
+    ):
         clarifying_questions.append("Should the short plan prioritize a meal or one standout activity?")
     trace = [
         {"stage": "parse_preferences", "status": "completed"},

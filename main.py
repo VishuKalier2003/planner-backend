@@ -221,13 +221,19 @@ def generate_final(
     duration = min(activity["hours"] + 1.5, preferences["available_hours"])
     evening = "evening" in preferences["time_window"] or "night" in preferences["time_window"]
     first_time, second_time = ("17:00", "19:30") if evening else ("10:00", "13:00")
+    activity_map_url = "https://www.google.com/maps/search/?api=1&query=" + quote(
+        f"{activity['name']}, {preferences['city']}"
+    )
+    food_map_url = "https://www.google.com/maps/search/?api=1&query=" + quote(
+        f"{food['name']}, {preferences['city']}"
+    )
     return {
         "city": preferences["city"],
         "title": f"A {preferences['mood'].title()} Saturday in {preferences['city'].title()}",
         "intro": "A low-stress route with one grounding activity and a satisfying meal, leaving room to wander.",
         "schedule": [
-            {"time": first_time, "activity": activity["name"], "type": activity["type"], "duration_hours": activity["hours"], "description": f"{activity['hours']} hours of {activity['type']} time, chosen to suit a {preferences['mood']} mood.", "cost": activity["cost"]},
-            {"time": second_time, "activity": food["name"], "type": "food", "duration_hours": 1.5, "description": "A practical, constraint-aware meal break close to the route.", "cost": food["cost"]},
+            {"time": first_time, "activity": activity["name"], "type": activity["type"], "duration_hours": activity["hours"], "description": f"{activity['hours']} hours of {activity['type']} time, chosen to suit a {preferences['mood']} mood.", "cost": activity["cost"], "map_url": activity_map_url},
+            {"time": second_time, "activity": food["name"], "type": "food", "duration_hours": 1.5, "description": "A practical, constraint-aware meal break close to the route.", "cost": food["cost"], "map_url": food_map_url},
         ],
         "estimated_cost": round(cost),
         "duration_hours": round(duration, 1),
